@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Email Confirmation - AIDA</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            max-width: 600px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            text-align: center;
+        }
+        .success {
+            color: #2E7D32;
+        }
+        .error {
+            color: #d32f2f;
+        }
+        .loading {
+            color: #1976d2;
+        }
+        .icon {
+            font-size: 48px;
+            margin-bottom: 20px;
+        }
+        .instructions {
+            margin-top: 30px;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: 8px;
+            border-left: 4px solid #2E7D32;
+        }
+        .app-link {
+            display: inline-block;
+            background-color: #2E7D32;
+            color: white;
+            padding: 12px 24px;
+            text-decoration: none;
+            border-radius: 8px;
+            margin-top: 20px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="loading" class="loading">
+            <div class="icon">⏳</div>
+            <h2>Confirming your email...</h2>
+            <p>Please wait while we verify your email address.</p>
+        </div>
+        
+        <div id="success" style="display: none;" class="success">
+            <div class="icon">✅</div>
+            <h2>Email Confirmed Successfully!</h2>
+            <p>Your email has been verified. You can now sign in to your AIDA account.</p>
+            <div class="instructions">
+                <h3>Next Steps:</h3>
+                <ol style="text-align: left;">
+                    <li>Open the AIDA app on your device</li>
+                    <li>Use your email and password to sign in</li>
+                    <li>You're ready to start using AIDA!</li>
+                </ol>
+            </div>
+        </div>
+        
+        <div id="error" style="display: none;" class="error">
+            <div class="icon">❌</div>
+            <h2>Email Confirmation Failed</h2>
+            <p id="error-message">There was an issue confirming your email. Please try again.</p>
+            <div class="instructions">
+                <h3>What to do:</h3>
+                <ul style="text-align: left;">
+                    <li>Check if the link has expired</li>
+                    <li>Try requesting a new confirmation email</li>
+                    <li>Contact support if the problem persists</li>
+                </ul>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <script>
+        // Initialize Supabase
+        // TODO: Replace with your actual Supabase credentials
+        const supabaseUrl = 'YOUR_SUPABASE_PROJECT_URL_HERE';
+        const supabaseKey = 'YOUR_SUPABASE_ANON_KEY_HERE';
+        const supabase = window.supabase.createClient(supabaseUrl, supabaseKey);
+
+        async function handleEmailConfirmation() {
+            try {
+                // Get the URL parameters
+                const urlParams = new URLSearchParams(window.location.search);
+                const accessToken = urlParams.get('access_token');
+                const refreshToken = urlParams.get('refresh_token');
+                const type = urlParams.get('type');
+
+                if (type === 'signup' && accessToken) {
+                    // Set the session with the tokens
+                    const { data, error } = await supabase.auth.setSession({
+                        access_token: accessToken,
+                        refresh_token: refreshToken
+                    });
+
+                    if (error) {
+                        throw error;
+                    }
+
+                    // Show success message
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('success').style.display = 'block';
+                    
+                    console.log('Email confirmed successfully:', data);
+                } else {
+                    throw new Error('Invalid confirmation link or missing parameters');
+                }
+            } catch (error) {
+                console.error('Email confirmation error:', error);
+                
+                // Show error message
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('error').style.display = 'block';
+                document.getElementById('error-message').textContent = error.message || 'Unknown error occurred';
+            }
+        }
+
+        // Run the confirmation process when page loads
+        window.addEventListener('load', handleEmailConfirmation);
+    </script>
+</body>
+</html>

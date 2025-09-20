@@ -1,0 +1,124 @@
+import 'dart:convert';
+import 'dart:io';
+import 'package:http/http.dart' as http;
+
+class GeminiService {
+  static const String _apiKey = 'AIzaSyBII-QMxjJZ_2SH582tlzOQ9hUpGGa4CmE'; // Replace with actual API key
+  static const String _baseUrl = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent';
+
+  static Future<ImageAnalysisResult> analyzeImage(File imageFile, {String? userDescription}) async {
+    try {
+      // Convert image to base64
+      final bytes = await imageFile.readAsBytes();
+      final base64Image = base64Encode(bytes);
+      
+      // Build the prompt with user description if provided
+      String prompt = '''Analyze this donation item image and provide detailed classification for a donation matching platform.
+
+${userDescription != null ? 'User Description: "$userDescription"\n' : ''}Please analyze the image and provide:
+
+1. **Item Description**: A clear, detailed description of what you see
+2. **Classification Tags**: 5-8 specific tags for matching (e.g., "winter coat", "children's books", "XL size", "electronics", "kitchen utensils")
+3. **Category**: Main category (clothing, books, food, electronics, furniture, toys, household, medical, etc.)
+4. **Condition**: Item condition (excellent, good, fair, poor, damaged)
+5. **Size/Details**: Size, dimensions, or specific details (e.g., "XL", "twin bed", "500ml bottle")
+6. **Target Audience**: Who this item is suitable for (children, adults, elderly, all ages)
+7. **Seasonality**: If applicable (winter, summer, all-season)
+8. **Urgency Level**: How urgently this type of item is typically needed (low, medium, high, urgent)
+
+Focus on details that would help match this item with people in need. Be specific about size, condition, and target audience.
+
+Format your response as valid JSON with these exact keys: description, tags, category, condition, size, targetAudience, seasonality, urgencyLevel''';
+
+      final requestBody = {
+        'contents': [
+          {
+            'parts': [
+              {
+                'text': prompt
+              },
+              {
+                'inline_data': {
+                  'mime_type': 'image/jpeg',
+                  'data': base64Image
+                }
+              }
+            ]
+          }
+        ],
+        'generationConfig': {
+          'temperature': 0.2,
+          'maxOutputTokens': 1500,
+        }
+      };
+
+      final response = await http.post(
+        Uri.parse('$_baseUrl?key=$_apiKey'),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: jsonEncode(requestBody),
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final content = data['candidates'][0]['content']['parts'][0]['text'];
+        
+        // Parse the JSON response from Gemini
+        final analysisData = jsonDecode(content);
+        
+        return ImageAnalysisResult(
+          description: analysisData['description'] ?? 'No description available',
+          tags: List<String>.from(analysisData['tags'] ?? []),
+          category: analysisData['category'] ?? 'Other',
+          condition: analysisData['condition'] ?? 'Unknown',
+          size: analysisData['size'] ?? '',
+          targetAudience: analysisData['targetAudience'] ?? 'All ages',
+          seasonality: analysisData['seasonality'] ?? 'All-season',
+          urgencyLevel: analysisData['urgencyLevel'] ?? 'Medium',
+        );
+      } else {
+        throw Exception('Failed to analyze image: ${response.statusCode}');
+      }
+    } catch (e) {
+      // Return mock data for development/testing
+      return _getMockAnalysisResult();
+    }
+  }
+
+  static ImageAnalysisResult _getMockAnalysisResult() {
+    // Mock data for development when API key is not available
+    return ImageAnalysisResult(
+      description: 'A gently used winter coat in good condition',
+      tags: ['winter coat', 'clothing', 'men\'s jacket', 'outerwear', 'XL size'],
+      category: 'Clothing',
+      condition: 'Good',
+      size: 'XL',
+      targetAudience: 'Adults',
+      seasonality: 'Winter',
+      urgencyLevel: 'High',
+    );
+  }
+}
+
+class ImageAnalysisResult {
+  final String description;
+  final List<String> tags;
+  final String category;
+  final String condition;
+  final String size;
+  final String targetAudience;
+  final String seasonality;
+  final String urgencyLevel;
+
+  ImageAnalysisResult({
+    required this.description,
+    required this.tags,
+    required this.category,
+    required this.condition,
+    required this.size,
+    required this.targetAudience,
+    required this.seasonality,
+    required this.urgencyLevel,
+  });
+}

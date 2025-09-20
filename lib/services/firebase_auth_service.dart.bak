@@ -1,0 +1,505 @@
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart';
+import 'package:flutter/foundation.dart';
+import '../models/user.dart' as app_user;
+import 'firebase_exceptions.dart.bak';
+import 'firebase_connection_manager.dart';
+
+class FirebaseAuthService {
+  static final FirebaseAuth _auth = FirebaseAuth.instance;
+  static final DatabaseReference _database = FirebaseDatabase.instance.ref();
+  static final FirebaseConnectionManager _connectionManager = FirebaseConnectionManager();
+
+  /// Initialize the auth service
+  static Future<void> initialize() async {
+    await _connectionManager.initialize();
+  }
+
+  // Get current user
+  static User? get currentUser => _auth.currentUser;
+
+  /// Sign up with email and password with comprehensive error handling
+  static Future<FirebaseResult<UserCredential>> signUpWithEmailPassword(
+    String email, 
+    String password, 
+    app_user.User userData
+  ) async {
+    try {
+      // Validate inputs
+      if (email.trim().isEmpty || password.trim().isEmpty) {
+        return FirebaseResult.failure(
+          const FirebaseOperationException(
+            message: 'Email and password cannot be empty',
+            code: 'invalid-input',
+            operation: 'signUp',
+          )
+        );
+      }
+
+      // Check internet connectivity
+      if (!_connectionManager.isConnected) {
+        final hasInternet = await _connectionManager.hasInternetConnection();
+        if (!hasInternet) {
+          return FirebaseResult.failure(
+            const FirebaseOperationException(
+              message: 'No internet connection. Please check your network.',
+              code: 'network-error',
+              operation: 'signUp',
+            )
+          );
+        }
+      }
+
+      return await FirebaseRetryManager.executeWithRetry(
+        () async {
+          // Create user account
+          UserCredential result = await _auth.createUserWithEmailAndPassword(
+            email: email.trim(),
+            password: password,
+          );
+
+          // Save user data to Realtime Database
+          if (result.user != null) {
+            final userDataMap = {
+              'id': result.user!.uid,
+              'name': userData.name.trim(),
+              'email': userData.email.trim(),
+              'phone': userData.phone.trim(),
+              'city': userData.city.trim(),
+              'userType': userData.userType.name,
+              'createdAt': userData.createdAt.toIso8601String(),
+              'isVerified': userData.isVerified,
+              'lastUpdated': DateTime.now().toIso8601String(),
+            };
+
+            // Add specific fields based on user type
+            if (userData is app_user.NGO) {
+              userDataMap.addAll({
+                'registrationNumber': userData.registrationNumber.trim(),
+                'missionStatement': userData.missionStatement.trim(),
+                'focusAreas': userData.focusAreas,
+              });
+            } else if (userData is app_user.Individual) {
+              userDataMap.addAll({
+                'needExplanation': userData.needExplanation.trim(),
+                'urgentNeeds': userData.urgentNeeds,
+              });
+            }
+
+            await _database.child('users').child(result.user!.uid).set(userDataMap);
+            
+            if (kDebugMode) {
+              print('User registered successfully: ${result.user!.uid}');
+            }
+          }
+
+          return FirebaseResult.success(result);
+        },
+        maxRetries: 2,
+        shouldRetry: FirebaseRetryManager.defaultShouldRetry,
+      );
+    } on FirebaseAuthException catch (e) {
+      final exception = FirebaseExceptionHandler.handleAuthException(e, 'signUp');
+      return FirebaseResult.failure(exception);
+    } catch (e) {
+      final exception = FirebaseExceptionHandler.handleGenericException(
+        e is Exception ? e : Exception(e.toString()), 
+        'signUp'
+      );
+      return FirebaseResult.failure(exception);
+    }
+  }
+
+  /// Sign in with email and password with comprehensive error handling
+  static Future<FirebaseResult<UserCredential>> signInWithEmailPassword(
+    String email, 
+    String password
+  ) async {
+    try {
+      // Validate inputs
+      if (email.trim().isEmpty || password.trim().isEmpty) {
+        return FirebaseResult.failure(
+          const FirebaseOperationException(
+            message: 'Email and password cannot be empty',
+            code: 'invalid-input',
+            operation: 'signIn',
+          )
+        );
+      }
+
+      // Check internet connectivity
+      if (!_connectionManager.isConnected) {
+        final hasInternet = await _connectionManager.hasInternetConnection();
+        if (!hasInternet) {
+          return FirebaseResult.failure(
+            const FirebaseOperationException(
+              message: 'No internet connection. Please check your network.',
+              code: 'network-error',
+              operation: 'signIn',
+            )
+          );
+        }
+      }
+
+      return await FirebaseRetryManager.executeWithRetry(
+        () async {
+          UserCredential result = await _auth.signInWithEmailAndPassword(
+            email: email.trim(),
+            password: password,
+          );
+          
+          if (kDebugMode) {
+            print('User signed in successfully: ${result.user?.uid}');
+          }
+          
+          return FirebaseResult.success(result);
+        },
+        maxRetries: 2,
+        shouldRetry: FirebaseRetryManager.defaultShouldRetry,
+      );
+    } on FirebaseAuthException catch (e) {
+      final exception = FirebaseExceptionHandler.handleAuthException(e, 'signIn');
+      return FirebaseResult.failure(exception);
+    } catch (e) {
+      final exception = FirebaseExceptionHandler.handleGenericException(
+        e is Exception ? e : Exception(e.toString()), 
+        'signIn'
+      );
+      return FirebaseResult.failure(exception);
+    }
+  }
+
+  /// Get user data from database with comprehensive error handling
+  static Future<FirebaseResult<app_user.User?>> getUserData(String uid) async {
+    try {
+      if (uid.trim().isEmpty) {
+        return FirebaseResult.failure(
+          const FirebaseOperationException(
+            message: 'User ID cannot be empty',
+            code: 'invalid-input',
+            operation: 'getUserData',
+          )
+        );
+      }
+
+      return await FirebaseRetryManager.executeWithRetry(
+        () async {
+          DatabaseEvent event = await _database.child('users').child(uid).once();
+          
+          if (!event.snapshot.exists) {
+            if (kDebugMode) {
+              print('User data not found for UID: $uid');
+            }
+            return FirebaseResult.success(null);
+          }
+
+          final data = event.snapshot.value;
+          if (data == null) {
+            return FirebaseResult.success(null);
+          }
+
+          final userMap = Map<String, dynamic>.from(data as Map);
+          
+          // Parse user type and create appropriate user object
+          String userTypeString = userMap['userType'] ?? 'individual';
+          app_user.UserType userType = app_user.UserType.values.firstWhere(
+            (e) => e.name == userTypeString,
+            orElse: () => app_user.UserType.individual,
+          );
+
+          app_user.User? user;
+          
+          switch (userType) {
+            case app_user.UserType.ngo:
+              user = app_user.NGO(
+                id: userMap['id'] ?? uid,
+                name: userMap['name'] ?? '',
+                email: userMap['email'] ?? '',
+                phone: userMap['phone'] ?? '',
+                city: userMap['city'] ?? '',
+                registrationNumber: userMap['registrationNumber'] ?? '',
+                missionStatement: userMap['missionStatement'] ?? '',
+                focusAreas: List<String>.from(userMap['focusAreas'] ?? []),
+                createdAt: _parseDateTime(userMap['createdAt']),
+                isVerified: userMap['isVerified'] ?? false,
+              );
+              break;
+            case app_user.UserType.individual:
+              user = app_user.Individual(
+                id: userMap['id'] ?? uid,
+                name: userMap['name'] ?? '',
+                email: userMap['email'] ?? '',
+                phone: userMap['phone'] ?? '',
+                city: userMap['city'] ?? '',
+                needExplanation: userMap['needExplanation'] ?? '',
+                urgentNeeds: List<String>.from(userMap['urgentNeeds'] ?? []),
+                createdAt: _parseDateTime(userMap['createdAt']),
+                isVerified: userMap['isVerified'] ?? false,
+              );
+              break;
+            case app_user.UserType.donor:
+              user = app_user.User(
+                id: userMap['id'] ?? uid,
+                name: userMap['name'] ?? '',
+                email: userMap['email'] ?? '',
+                phone: userMap['phone'] ?? '',
+                city: userMap['city'] ?? '',
+                userType: userType,
+                createdAt: _parseDateTime(userMap['createdAt']),
+                isVerified: userMap['isVerified'] ?? false,
+              );
+              break;
+          }
+
+          if (kDebugMode) {
+            print('User data loaded successfully for: ${user.name}');
+          }
+
+          return FirebaseResult.success(user);
+        },
+        maxRetries: 3,
+        shouldRetry: FirebaseRetryManager.defaultShouldRetry,
+      );
+    } catch (e) {
+      final exception = FirebaseExceptionHandler.handleDatabaseException(
+        e is Exception ? e : Exception(e.toString()), 
+        'getUserData'
+      );
+      return FirebaseResult.failure(exception);
+    }
+  }
+
+  /// Sign out with error handling
+  static Future<FirebaseResult<void>> signOut() async {
+    try {
+      await _auth.signOut();
+      
+      if (kDebugMode) {
+        print('User signed out successfully');
+      }
+      
+      return const FirebaseResult.success(null);
+    } catch (e) {
+      final exception = FirebaseExceptionHandler.handleGenericException(
+        e is Exception ? e : Exception(e.toString()), 
+        'signOut'
+      );
+      return FirebaseResult.failure(exception);
+    }
+  }
+
+  /// Force clear authentication state (for debugging)
+  static Future<void> forceSignOut() async {
+    try {
+      await _auth.signOut();
+      if (kDebugMode) {
+        print('Force signed out - current user: ${_auth.currentUser}');
+      }
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error during force sign out: $e');
+      }
+    }
+  }
+
+  // Listen to auth state changes
+  static Stream<User?> get authStateChanges => _auth.authStateChanges();
+
+  /// Update user profile with error handling
+  static Future<FirebaseResult<void>> updateUserProfile({
+    String? displayName,
+    String? photoURL,
+  }) async {
+    try {
+      User? user = _auth.currentUser;
+      if (user == null) {
+        return FirebaseResult.failure(
+          const FirebaseOperationException(
+            message: 'No user is currently signed in',
+            code: 'not-authenticated',
+            operation: 'updateProfile',
+          )
+        );
+      }
+
+      return await FirebaseRetryManager.executeWithRetry(
+        () async {
+          if (displayName != null) {
+            await user.updateDisplayName(displayName.trim());
+          }
+          if (photoURL != null) {
+            await user.updatePhotoURL(photoURL);
+          }
+          
+          if (kDebugMode) {
+            print('User profile updated successfully');
+          }
+          
+          return const FirebaseResult.success(null);
+        },
+        maxRetries: 2,
+        shouldRetry: FirebaseRetryManager.defaultShouldRetry,
+      );
+    } on FirebaseAuthException catch (e) {
+      final exception = FirebaseExceptionHandler.handleAuthException(e, 'updateProfile');
+      return FirebaseResult.failure(exception);
+    } catch (e) {
+      final exception = FirebaseExceptionHandler.handleGenericException(
+        e is Exception ? e : Exception(e.toString()), 
+        'updateProfile'
+      );
+      return FirebaseResult.failure(exception);
+    }
+  }
+
+  /// Send password reset email with error handling
+  static Future<FirebaseResult<void>> sendPasswordResetEmail(String email) async {
+    try {
+      if (email.trim().isEmpty) {
+        return FirebaseResult.failure(
+          const FirebaseOperationException(
+            message: 'Email cannot be empty',
+            code: 'invalid-input',
+            operation: 'sendPasswordReset',
+          )
+        );
+      }
+
+      return await FirebaseRetryManager.executeWithRetry(
+        () async {
+          await _auth.sendPasswordResetEmail(email: email.trim());
+          
+          if (kDebugMode) {
+            print('Password reset email sent to: $email');
+          }
+          
+          return const FirebaseResult.success(null);
+        },
+        maxRetries: 2,
+        shouldRetry: FirebaseRetryManager.defaultShouldRetry,
+      );
+    } on FirebaseAuthException catch (e) {
+      final exception = FirebaseExceptionHandler.handleAuthException(e, 'sendPasswordReset');
+      return FirebaseResult.failure(exception);
+    } catch (e) {
+      final exception = FirebaseExceptionHandler.handleGenericException(
+        e is Exception ? e : Exception(e.toString()), 
+        'sendPasswordReset'
+      );
+      return FirebaseResult.failure(exception);
+    }
+  }
+
+  /// Update user data in database
+  static Future<FirebaseResult<void>> updateUserData(String uid, Map<String, dynamic> updates) async {
+    try {
+      if (uid.trim().isEmpty) {
+        return FirebaseResult.failure(
+          const FirebaseOperationException(
+            message: 'User ID cannot be empty',
+            code: 'invalid-input',
+            operation: 'updateUserData',
+          )
+        );
+      }
+
+      return await FirebaseRetryManager.executeWithRetry(
+        () async {
+          // Add timestamp
+          final updateData = Map<String, dynamic>.from(updates);
+          updateData['lastUpdated'] = DateTime.now().toIso8601String();
+          
+          await _database.child('users').child(uid).update(updateData);
+          
+          if (kDebugMode) {
+            print('User data updated successfully for: $uid');
+          }
+          
+          return const FirebaseResult.success(null);
+        },
+        maxRetries: 3,
+        shouldRetry: FirebaseRetryManager.defaultShouldRetry,
+      );
+    } catch (e) {
+      final exception = FirebaseExceptionHandler.handleDatabaseException(
+        e is Exception ? e : Exception(e.toString()), 
+        'updateUserData'
+      );
+      return FirebaseResult.failure(exception);
+    }
+  }
+
+  /// Helper method to parse DateTime safely
+  static DateTime _parseDateTime(dynamic dateTimeString) {
+    if (dateTimeString == null) return DateTime.now();
+    
+    try {
+      if (dateTimeString is String) {
+        return DateTime.parse(dateTimeString);
+      }
+      return DateTime.now();
+    } catch (e) {
+      if (kDebugMode) {
+        print('Error parsing datetime: $e');
+      }
+      return DateTime.now();
+    }
+  }
+
+  /// Check if email is verified
+  static bool get isEmailVerified => _auth.currentUser?.emailVerified ?? false;
+
+  /// Send email verification
+  static Future<FirebaseResult<void>> sendEmailVerification() async {
+    try {
+      final user = _auth.currentUser;
+      if (user == null) {
+        return FirebaseResult.failure(
+          const FirebaseOperationException(
+            message: 'No user is currently signed in',
+            code: 'not-authenticated',
+            operation: 'sendEmailVerification',
+          )
+        );
+      }
+
+      if (user.emailVerified) {
+        return FirebaseResult.failure(
+          const FirebaseOperationException(
+            message: 'Email is already verified',
+            code: 'already-verified',
+            operation: 'sendEmailVerification',
+          )
+        );
+      }
+
+      return await FirebaseRetryManager.executeWithRetry(
+        () async {
+          await user.sendEmailVerification();
+          
+          if (kDebugMode) {
+            print('Email verification sent to: ${user.email}');
+          }
+          
+          return const FirebaseResult.success(null);
+        },
+        maxRetries: 2,
+        shouldRetry: FirebaseRetryManager.defaultShouldRetry,
+      );
+    } on FirebaseAuthException catch (e) {
+      final exception = FirebaseExceptionHandler.handleAuthException(e, 'sendEmailVerification');
+      return FirebaseResult.failure(exception);
+    } catch (e) {
+      final exception = FirebaseExceptionHandler.handleGenericException(
+        e is Exception ? e : Exception(e.toString()), 
+        'sendEmailVerification'
+      );
+      return FirebaseResult.failure(exception);
+    }
+  }
+
+  /// Dispose resources
+  static void dispose() {
+    // Clean up resources if needed
+  }
+}
